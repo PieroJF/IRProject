@@ -20,9 +20,9 @@ Log Throttling: Implemented a static counter to throttle warning logs to 1Hz, ke
 ## 3. Slope-Aware Navigation & Cost Mapping
 File: `controllers/moose_path_following/moose_path_following.c`
 
-I developed the navigation logic that integrates the EKF Pose (from Person B) to make autonomous driving decisions.
+I developed the navigation logic that integrates the EKF Pose (from Ran) to make autonomous driving decisions.
 
-Mock Cost Map (`get_mock_map_cost`): Since the 3D Mapping module (Person C) is in progress, I implemented a virtual cost layer that simulates a steep "Hill Obstacle" at coordinates (5.0, 2.0).
+Mock Cost Map (`get_mock_map_cost`): Since the 3D Mapping module (Piero) is in progress, I implemented a virtual cost layer that simulates a steep "Hill Obstacle" at coordinates (5.0, 2.0).
 Reactive Planner (`calculate_navigation`):
     Lookahead: Projects the robot's EKF position 2.0 meters forward based on current heading ($\theta$).
     Avoidance: If the projected point hits a High Cost area (>50), the planner overrides the path to execute an evasive turn.
