@@ -2,12 +2,11 @@
 Role: Path Planning, Hazard Detection & Evaluation (Person D)
 
 ## 1. Hardware Integration & Robustness
-Files: `protos/Moose.proto`, `controllers/moose_path_following/moose_path_following.c`
+**Files:** `controllers/moose_path_following/moose_path_following.c`
 
-To enable slope detection, I identified that the base Moose robot model was missing the required Inertial Measurement Unit (IMU).
+To enable slope detection, I integrated the robot's Inertial Measurement Unit (IMU). The initial controller crashed because it could not locate the device by its default name.
 
-PROTO Modification: Added an `InertialUnit` node (named "inertial unit") to the `Moose.proto`.
-Robust Device Discovery: Implemented a failsafe initialization routine in C. Instead of hardcoding the device name (which caused crashes), the controller now iterates through the robot's device list to identify the IMU by its internal Node Type (`WB_NODE_INERTIAL_UNIT`). This ensures the code works even if the sensor name changes.
+Robust Device Discovery: Instead of hardcoding the device name (which caused runtime errors), I implemented a failsafe initialization routine. The controller now iterates through the robot's device list to identify the IMU dynamically by its internal Node Type (`WB_NODE_INERTIAL_UNIT`). This ensures the code is portable and robust even if the robot's specific sensor names change.
 
 ## 2. Hazard Detection Algorithm
 File: `controllers/moose_path_following/moose_path_following.c`
