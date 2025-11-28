@@ -7,6 +7,9 @@
 #include <webots/compass.h>
 #include <webots/position_sensor.h>
 #include <webots/gps.h>
+#include <webots/inertial_unit.h>
+#include <webots/device.h>
+#include <webots/nodes.h>
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
@@ -168,15 +171,24 @@ void initialize_devices() {
     
     devices.gps = wb_robot_get_device("gps");
     if(devices.gps) wb_gps_enable(devices.gps, TIME_STEP);
-    // [IK] Initialize IMU for Slope Detection
-    // The Moose robot usually names this device "imu" or "inertial unit"
+    
+    // 3. [IK] Robust IMU Initialization (Find by Type)
+    devices.imu = 0; // Initialize to NULL
+    int n_devices = wb_robot_get_number_of_devices();
+    
+    for (int i = 0; i < n_devices; i++) {
+        WbDeviceTag tag = wb_robot_get_device_by_index(i);
+        // Look for the specific hardware type "InertialUnit"
+        if (wb_device_get_node_type(tag) == WB_NODE_INERTIAL_UNIT) {
+            devices.imu = tag;
+            printf("SUCCESS: IMU Device found via Type Inspection! (Tag: %d)\n", tag);
+            wb_inertial_unit_enable(devices.imu, TIME_STEP);
+            break; // Stop looking once found
+        }
+    }
 
-    devices.imu = wb_robot_get_device("imu"); 
-    if(devices.imu) {
-        wb_inertial_unit_enable(devices.imu, TIME_STEP);
-        printf("IMU initialized for hazard detection.\n");
-    } else {
-        printf("Warning: IMU device not found! Hazard detection disabled.\n");
+    if (!devices.imu) {
+        printf("CRITICAL WARNING: No InertialUnit found on this robot.\n");
     }
 
     ekf_init(&ekf_filter);
