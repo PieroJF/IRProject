@@ -1,5 +1,5 @@
 # Contributor: Inika Kumar
-Role: Path Planning, Hazard Detection & Evaluation (Person D)
+Role: Path Planning, Hazard Detection & Evaluation
 
 ## 1. Hardware Integration & Robustness
 **Files:** `controllers/moose_path_following/moose_path_following.c`
