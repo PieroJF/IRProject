@@ -17,6 +17,9 @@
 // Moose actual wheel diameter parameter
 #define WHEEL_RADIUS 0.31 
 #define WHEEL_BASE   1.1
+// [IK] Hazard Thresholds (Radians) - ~20 degrees
+#define MAX_SAFE_PITCH 0.35 
+#define MAX_SAFE_ROLL  0.35
 
 // ============================================
 // 1. Data Structure Definition
@@ -39,6 +42,9 @@ typedef struct {
     double compass_yaw;    
     double gps_x;
     double gps_y;
+    // [IK] Added Roll/Pitch for Hazard Detection
+    double roll;
+    double pitch;
     // Encoder data
     double left_pos[4];
     double right_pos[4];
@@ -51,6 +57,7 @@ typedef struct {
     WbDeviceTag right_motors[4];
     WbDeviceTag compass;
     WbDeviceTag gps;
+    WbDeviceTag imu; // [IK] Added IMU device tag
 } RobotDevices;
 
 // ============================================
@@ -161,6 +168,16 @@ void initialize_devices() {
     
     devices.gps = wb_robot_get_device("gps");
     if(devices.gps) wb_gps_enable(devices.gps, TIME_STEP);
+    // [IK] Initialize IMU for Slope Detection
+    // The Moose robot usually names this device "imu" or "inertial unit"
+
+    devices.imu = wb_robot_get_device("imu"); 
+    if(devices.imu) {
+        wb_inertial_unit_enable(devices.imu, TIME_STEP);
+        printf("IMU initialized for hazard detection.\n");
+    } else {
+        printf("Warning: IMU device not found! Hazard detection disabled.\n");
+    }
 
     ekf_init(&ekf_filter);
 }
@@ -184,6 +201,30 @@ void read_sensors_data() {
         sensor_data.gps_x = pos[0];
         sensor_data.gps_y = pos[1];
     }
+
+    // [IK] 4. Read IMU (Roll/Pitch)
+    if(devices.imu) {
+        const double *rpy = wb_inertial_unit_get_roll_pitch_yaw(devices.imu);
+        // rpy[0] is roll (x-axis), rpy[1] is pitch (z-axis in Webots sometimes, but usually y)
+        sensor_data.roll = rpy[0];
+        sensor_data.pitch = rpy[1];
+    }
+}
+
+// ============================================
+// [IK] Helper Functions
+// ============================================
+
+// Hazard Analysis
+// Returns 1 if unsafe, 0 if safe
+int is_hazardous_state() {
+    // Check if robot is tipping over
+    if (fabs(sensor_data.roll) > MAX_SAFE_ROLL || fabs(sensor_data.pitch) > MAX_SAFE_PITCH) {
+        printf("!!! DANGER: Tipping Hazard Detected! Roll: %.2f, Pitch: %.2f !!!\n", 
+               sensor_data.roll, sensor_data.pitch);
+        return 1;
+    }
+    return 0;
 }
 
 // ============================================
