@@ -224,20 +224,81 @@ void read_sensors_data() {
 }
 
 // ============================================
+// [IK] Person D: Navigation & Mapping Logic
+// ============================================
+
+// MMock Cost Map (Simulates Piero's Output)
+// Place a "Virtual Hill" at (x=5.0, y=2.0) relative to the start.
+// If the robot tries to go there, the cost is HIGH.
+  double get_mock_map_cost(double x, double y) {
+      double hill_x = 5.0;
+      double hill_y = 2.0;
+      double radius = 1.5; // The hill is 3 meters wide
+      
+      // Calculate distance to the virtual hill
+      double dist = sqrt(pow(x - hill_x, 2) + pow(y - hill_y, 2));
+      
+      if (dist < radius) {
+          return 100.0; // High Cost (Steep Slope / Rock)
+      }
+      return 0.0; // Low Cost (Flat Ground)
+  }
+  
+  // Navigation Controller
+  // Returns a "turn" value: Positive = Turn Left, Negative = Turn Right
+  double calculate_navigation(double rob_x, double rob_y, double rob_theta, double goal_x, double goal_y) {
+      // 1. Look Ahead (Project position 2 meters forward)
+      double lookahead = 2.0;
+      double next_x = rob_x + cos(rob_theta) * lookahead;
+      double next_y = rob_y + sin(rob_theta) * lookahead;
+      
+      // 2. Check the Map Cost at that spot
+      double cost_ahead = get_mock_map_cost(next_x, next_y);
+      
+      // 3. Reactive Avoidance
+      if (cost_ahead > 50.0) {
+          printf("[Nav] High Slope Detected ahead! Turning Left to avoid.\n");
+          return 0.8; // Force a left turn
+      }
+      
+      // 4. If clear, steer toward goal
+      double dx = goal_x - rob_x;
+      double dy = goal_y - rob_y;
+      double target_angle = atan2(dy, dx);
+      double error = target_angle - rob_theta;
+      
+      // Normalize angle to -PI to +PI
+      while(error > M_PI) error -= 2.0 * M_PI;
+      while(error < -M_PI) error += 2.0 * M_PI;
+      
+      return error; // P-Controller (Proportional to error)
+  }
+
+// ============================================
 // [IK] Helper Functions
 // ============================================
 
 // Hazard Analysis
 // Returns 1 if unsafe, 0 if safe
-int is_hazardous_state() {
-    // Check if robot is tipping over
-    if (fabs(sensor_data.roll) > MAX_SAFE_ROLL || fabs(sensor_data.pitch) > MAX_SAFE_PITCH) {
-        printf("!!! DANGER: Tipping Hazard Detected! Roll: %.2f, Pitch: %.2f !!!\n", 
-               sensor_data.roll, sensor_data.pitch);
-        return 1;
-    }
-    return 0;
-}
+  int is_hazardous_state() {
+      static int hazard_counter = 0; // 'static' keeps the value between function calls
+  
+      // Check if robot is tipping over
+      if (fabs(sensor_data.roll) > MAX_SAFE_ROLL || fabs(sensor_data.pitch) > MAX_SAFE_PITCH) {
+          
+          // Only print every 30 steps (roughly once per second)
+          if (hazard_counter % 30 == 0) {
+              printf("!!! DANGER: Tipping Hazard Detected! Roll: %.2f, Pitch: %.2f !!!\n", 
+                     sensor_data.roll, sensor_data.pitch);
+          }
+          
+          hazard_counter++;
+          return 1; // Always return 1 to cut power, even if we didn't print this time
+      }
+  
+      hazard_counter = 0; // Reset counter when we are safe
+      return 0;
+  }
 
 // ============================================
 // Main program
@@ -251,6 +312,11 @@ int main() {
     printf("========================================\n\n");
 
     initialize_devices();
+    
+    // [IK] Navigation Goal: Go to X=10, Y=2
+    // Note: The "Virtual Hill" is at (5,2), so it is directly in the way!
+    double goal_x = 10.0;
+    double goal_y = 2.0;
     
     // 1. preheat
     for(int i=0; i<10; i++) {
@@ -281,7 +347,16 @@ int main() {
     
     while (wb_robot_step(TIME_STEP) != -1) {
         step_count++;
-        read_sensors_data();
+        read_sensors_data(); // Gets IMU, GPS, Encoders
+        
+        // [IK] Hazard Safety Layer
+        // If the IMU detects we are tipping over, CUT POWER immediately.
+        if (is_hazardous_state()) {
+            wb_motor_set_velocity(devices.left_motors[0], 0);
+            wb_motor_set_velocity(devices.right_motors[0], 0);
+            // (Simulate cutting all motors)
+            continue; 
+        }
         
         // --- Calculate average wheel position ---
         double curr_l = 0, curr_r = 0;
@@ -307,6 +382,35 @@ int main() {
         
         ekf_predict(v_linear, v_angular, dt);
         if(devices.compass) ekf_update(sensor_data.compass_yaw);
+        
+        // --- [IK] Path Planning Layer ---
+        // 1. Get current EKF Pose
+        double cx = ekf_filter.state[0];
+        double cy = ekf_filter.state[1];
+        double ctheta = ekf_filter.state[2];
+
+        // 2. Calculate Steering
+        double turn_cmd = calculate_navigation(cx, cy, ctheta, goal_x, goal_y);
+        double fwd_cmd = 2.0; // Base speed
+
+        // 3. Apply to Motors (Differential Drive)
+        double left_speed = fwd_cmd - turn_cmd;
+        double right_speed = fwd_cmd + turn_cmd;
+
+        // Clamp speeds
+        if(left_speed > 5.0) left_speed = 5.0;
+        if(right_speed > 5.0) right_speed = 5.0;
+
+        for(int i=0; i<4; i++) {
+            if(devices.left_motors[i]) wb_motor_set_velocity(devices.left_motors[i], left_speed);
+            if(devices.right_motors[i]) wb_motor_set_velocity(devices.right_motors[i], right_speed);
+        }
+
+        // --- Debug Output (Every 1 second) ---
+        if(step_count % (1000 / TIME_STEP) == 0) {
+             printf("Pos: (%.2f, %.2f) -> Goal: (%.2f, %.2f) | Map Cost Ahead: %.0f\n", 
+                    cx, cy, goal_x, goal_y, get_mock_map_cost(cx + cos(ctheta)*2, cy + sin(ctheta)*2));
+        }
 
         // --- Output according to specified format (per second) ---
         if(step_count % (1000 / TIME_STEP) == 0) {
@@ -329,12 +433,6 @@ int main() {
             printf("[Error] Distance Error: %.3f m\n", dist_err);
         }
 
-        // --- Motion Control ---
-        double speed = 2.0;
-        for(int i=0; i<4; i++) {
-            if(devices.left_motors[i]) wb_motor_set_velocity(devices.left_motors[i], speed);
-            if(devices.right_motors[i]) wb_motor_set_velocity(devices.right_motors[i], speed);
-        }
     }
     
     wb_robot_cleanup();
