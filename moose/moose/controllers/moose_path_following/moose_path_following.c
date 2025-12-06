@@ -1362,7 +1362,7 @@ void read_sensors_data(void) {
       
       PathNode* goal_node = NULL;
       int iterations = 0;
-      int max_iterations = PATH_MAP_SIZE * PATH_MAP_SIZE / 4;
+      int max_iterations = PATH_MAP_SIZE * PATH_MAP_SIZE * 4;
       
       // search loop
       while (open_set.size > 0 && iterations < max_iterations) {
@@ -1623,7 +1623,7 @@ double get_map_cost(double x, double y) {
     
     // Unknown areas get medium cost
     if (trav == 128) {
-        return 50.0;
+        return 1.0;
     }
     
     // Add slope penalty
