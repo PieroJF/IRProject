@@ -212,6 +212,15 @@ typedef struct {
     int size;
 } PriorityQueue;
 
+// hazard types detected from sensors
+typedef enum {
+    HAZARD_NONE = 0,
+    HAZARD_STEEP_SLOPE = 1,  
+    HAZARD_ROCK = 2,  
+    HAZARD_HOLE = 3,  
+    HAZARD_TIPPING = 4  
+} HazardType;
+
 // ============================================================================
 // GLOBAL VARIABLES
 // ============================================================================
@@ -268,6 +277,9 @@ float octomap_get_occupancy(OctoMap* map, double x, double y, double z);
 // A* Path Planning functions
 int astar_plan_path(int start_x, int start_y, int goal_x, int goal_y, Path* path);
 double follow_path(Path* path, double robot_x, double robot_y, double robot_theta);
+
+// hazard detection function
+HazardType detect_hazards_ahead(double robot_x, double robot_y, double robot_theta);
 
 // Point cloud functions
 PointCloud* pointcloud_create(int capacity);
@@ -1463,6 +1475,54 @@ void read_sensors_data(void) {
       return error; // steering command
   }
   
+  
+  // ============================================================================
+// HAZARD DETECTION 
+// ============================================================================
+
+// detect hazards from LIDAR + IMU data  
+  HazardType detect_hazards_ahead(double robot_x, double robot_y, double robot_theta) {
+      
+      double lookahead = 2.0; // look 2m ahead
+      double check_x = robot_x + cos(robot_theta) * lookahead;
+      double check_y = robot_y + sin(robot_theta) * lookahead;
+      
+      // check for steep slopes
+      unsigned char trav = mapping_get_traversability(check_x, check_y);
+      float slope = mapping_get_slope(check_x, check_y);
+      
+      // high cost = obstacle/steep slope detected
+      if (trav > 200 || slope > MAX_SAFE_PITCH) {
+          return HAZARD_STEEP_SLOPE;
+      }
+      
+      // check for rocks
+      if (trav > 150 && slope < 0.2) {
+          return HAZARD_ROCK;
+      }
+      
+      // check for holes (unknown areas surrounded by known terrain)
+      if (trav == 128) { // Unknown area
+          // check if surrounded by known areas
+          int known_neighbors = 0;
+          for (double r = 0.5; r < 1.5; r += 0.5) {
+              for (double a = 0; a < 2*M_PI; a += M_PI/4) {
+                  double nx = check_x + r * cos(a);
+                  double ny = check_y + r * sin(a);
+                  if (mapping_get_traversability(nx, ny) != 128) {
+                      known_neighbors++;
+                  }
+              }
+          }
+          // if mostly surrounded by known terrain, this unknown area is likely a hole
+          if (known_neighbors > 6) {
+              return HAZARD_HOLE;
+          }
+      }
+      
+      return HAZARD_NONE;
+  }
+
 // ============================================================================
 // NAVIGATION (uses real map data from Piero's module)
 // ============================================================================
@@ -1530,21 +1590,22 @@ double calculate_navigation(double rob_x, double rob_y, double rob_theta,
     return error;
 }
 
-int is_hazardous_state(void) {
-    static int hazard_counter = 0;
-
-    if (fabs(sensor_data.roll) > MAX_SAFE_ROLL || fabs(sensor_data.pitch) > MAX_SAFE_PITCH) {
-        if (hazard_counter % 30 == 0) {
-            printf("!!! HAZARD: Roll=%.2f°, Pitch=%.2f° !!!\n", 
-                   sensor_data.roll * 180/M_PI, sensor_data.pitch * 180/M_PI);
-        }
-        hazard_counter++;
-        return 1;
-    }
-
-    hazard_counter = 0;
-    return 0;
-}
+// detects if robot is currently tipping over
+  int is_hazardous_state(void) {
+     static int hazard_counter = 0;
+  
+      if (fabs(sensor_data.roll) > MAX_SAFE_ROLL || fabs(sensor_data.pitch) > MAX_SAFE_PITCH) {
+          if (hazard_counter % 30 == 0) {
+              printf("!!! HAZARD: Roll=%.2f°, Pitch=%.2f° !!!\n", 
+                     sensor_data.roll * 180/M_PI, sensor_data.pitch * 180/M_PI);
+          }
+          hazard_counter++;
+          return 1;
+      }
+  
+      hazard_counter = 0;
+      return 0;
+  }
 
 // ============================================================================
 // MAIN CONTROL LOOP
