@@ -1182,7 +1182,7 @@ void initialize_devices(void) {
     devices.gps = wb_robot_get_device("gps");
     if(devices.gps) wb_gps_enable(devices.gps, TIME_STEP);
     
-    devices.velodyne = wb_robot_get_device("velodyne");
+    devices.velodyne = wb_robot_get_device("lidar");
     if(devices.velodyne) {
         wb_lidar_enable(devices.velodyne, TIME_STEP);
         wb_lidar_enable_point_cloud(devices.velodyne);
