@@ -221,6 +221,17 @@ typedef enum {
     HAZARD_TIPPING = 4  
 } HazardType;
 
+typedef struct {
+    int total_paths_planned;   // A* calls
+    int successful_reaches;  // goal reached
+    int hazards_avoided;   // hazard detection prevented danger
+    int emergency_stops;  // robot stopped due to tipping
+    double total_distance_traveled;   // cumulative distance
+    int replans_due_to_obstacles;   // times path was replanned
+    double total_planning_time;   // performance analysis
+    int lidar_hazards_detected;   // rocks/holes detected from LiDAR
+} NavigationMetrics;
+
 // ============================================================================
 // GLOBAL VARIABLES
 // ============================================================================
@@ -241,6 +252,8 @@ static double gps_offset_z = 0.0;
 static char* g_voxel_grid = NULL;
 
 static Path current_path; // for A* path planning
+
+static NavigationMetrics nav_metrics; // for validating navigation performance
 // ============================================================================
 // FORWARD DECLARATIONS
 // ============================================================================
@@ -280,6 +293,10 @@ double follow_path(Path* path, double robot_x, double robot_y, double robot_thet
 
 // hazard detection function
 HazardType detect_hazards_ahead(double robot_x, double robot_y, double robot_theta);
+
+// navigating performance functions
+void pathplanning_init(void);
+void pathplanning_print_metrics(void);
 
 // Point cloud functions
 PointCloud* pointcloud_create(int capacity);
@@ -1455,6 +1472,7 @@ void read_sensors_data(void) {
           path->current_waypoint++;
           if (path->current_waypoint >= path->length) {
               printf("[Path Follow] *** GOAL REACHED! ***\n");
+              nav_metrics.successful_reaches++;
               return 0.0;
           }
           // update to next waypoint
@@ -1493,11 +1511,13 @@ void read_sensors_data(void) {
       
       // high cost = obstacle/steep slope detected
       if (trav > 200 || slope > MAX_SAFE_PITCH) {
+          nav_metrics.hazards_avoided++;
           return HAZARD_STEEP_SLOPE;
       }
       
       // check for rocks
       if (trav > 150 && slope < 0.2) {
+          nav_metrics.lidar_hazards_detected++;
           return HAZARD_ROCK;
       }
       
@@ -1516,6 +1536,7 @@ void read_sensors_data(void) {
           }
           // if mostly surrounded by known terrain, this unknown area is likely a hole
           if (known_neighbors > 6) {
+              nav_metrics.lidar_hazards_detected++;
               return HAZARD_HOLE;
           }
       }
@@ -1598,6 +1619,7 @@ double calculate_navigation(double rob_x, double rob_y, double rob_theta,
           if (hazard_counter % 30 == 0) {
               printf("!!! HAZARD: Roll=%.2f°, Pitch=%.2f° !!!\n", 
                      sensor_data.roll * 180/M_PI, sensor_data.pitch * 180/M_PI);
+              nav_metrics.emergency_stops++;       
           }
           hazard_counter++;
           return 1;
@@ -1606,6 +1628,51 @@ double calculate_navigation(double rob_x, double rob_y, double rob_theta,
       hazard_counter = 0;
       return 0;
   }
+
+// ============================================================================
+// NAVIGATION PERFORMACNE METRICS
+// ==========================================================================
+
+// Initialise path planning and metrics
+void pathplanning_init(void) {
+    // Initialise path structure
+    memset(&current_path, 0, sizeof(Path));
+    
+    // Initialise metrics to zero
+    memset(&nav_metrics, 0, sizeof(NavigationMetrics));
+    
+    printf("[Path Planning] Module initialised with performance tracking\n");
+}
+
+// print navigation performance metrics
+void pathplanning_print_metrics(void) {
+    printf("\n========== NAVIGATION PERFORMANCE METRICS ==========\n");
+    printf("Total Paths Planned: %d\n", nav_metrics.total_paths_planned);
+    printf("Successful Goal Reaches: %d\n", nav_metrics.successful_reaches);
+    
+    // calculate and display success rate
+    if (nav_metrics.total_paths_planned > 0) {
+        double success_rate = 100.0 * nav_metrics.successful_reaches / 
+                              nav_metrics.total_paths_planned;
+        printf("Success Rate: %.1f%%\n", success_rate);
+    } else {
+        printf("Success Rate: N/A (no paths planned)\n");
+    }
+    
+    printf("Hazards Avoided (Slope/Terrain): %d\n", nav_metrics.hazards_avoided);
+    printf("LiDAR Hazards Detected (Rocks/Holes): %d\n", nav_metrics.lidar_hazards_detected);
+    printf("Emergency Stops (Tipping): %d\n", nav_metrics.emergency_stops);
+    printf("Total Distance Traveled: %.2f m\n", nav_metrics.total_distance_traveled);
+    printf("Replans Due to Obstacles: %d\n", nav_metrics.replans_due_to_obstacles);
+    
+    if (nav_metrics.total_distance_traveled > 0) {
+        double hazards_per_meter = (nav_metrics.hazards_avoided + 
+                                    nav_metrics.lidar_hazards_detected) / 
+                                   nav_metrics.total_distance_traveled;
+        printf("Hazard Detection Rate: %.2f hazards/meter\n", hazards_per_meter);
+    }
+    
+}
 
 // ============================================================================
 // MAIN CONTROL LOOP
@@ -1794,6 +1861,10 @@ int main(void) {
     mapping_cleanup();
     
     printf("[Shutdown] Done.\n");
+    
+    printf("\n[Evaluation] Navigation Performance Report:\n");
+    pathplanning_print_metrics();
+ 
     wb_robot_cleanup();
     return 0;
 }
