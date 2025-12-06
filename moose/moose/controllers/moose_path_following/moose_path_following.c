@@ -226,7 +226,7 @@ typedef struct {
     int successful_reaches;  // goal reached
     int hazards_avoided;   // hazard detection prevented danger
     int emergency_stops;  // robot stopped due to tipping
-    double total_distance_traveled;   // cumulative distance
+    double total_distance_travelled;   // cumulative distance
     int replans_due_to_obstacles;   // times path was replanned
     double total_planning_time;   // performance analysis
     int lidar_hazards_detected;   // rocks/holes detected from LiDAR
@@ -297,6 +297,8 @@ HazardType detect_hazards_ahead(double robot_x, double robot_y, double robot_the
 // navigating performance functions
 void pathplanning_init(void);
 void pathplanning_print_metrics(void);
+
+double navigation_controller(double rob_x, double rob_y, double rob_theta, double goal_x, double goal_y);
 
 // Point cloud functions
 PointCloud* pointcloud_create(int capacity);
@@ -1548,6 +1550,73 @@ void read_sensors_data(void) {
 // NAVIGATION (uses real map data from Piero's module)
 // ============================================================================
 
+  // Integrates A* path planning, hazard detection, real cost map and metrics tracking [Inika Kumar]
+  double navigation_controller(double rob_x, double rob_y, double rob_theta, double goal_x, double goal_y) {
+      static int initialised = 0;
+      static int replan_counter = 0;
+      static int last_path_valid = 0;
+      
+      if (!initialised) {
+          pathplanning_init();
+          initialised = 1;
+      }
+      
+      // replan periodically or when path is invalid
+      replan_counter++;
+      if (replan_counter >= 30 || !last_path_valid) {
+          replan_counter = 0;
+          
+          // convert to grid coordinates
+          int gx_start, gy_start, gx_goal, gy_goal;
+          world_to_path_grid(rob_x, rob_y, &gx_start, &gy_start);
+          world_to_path_grid(goal_x, goal_y, &gx_goal, &gy_goal);
+          
+          // plan path using A*
+          last_path_valid = astar_plan_path(gx_start, gy_start, 
+                                            gx_goal, gy_goal, &current_path);
+          
+          // track planning attempts
+          if (last_path_valid) {
+              nav_metrics.total_paths_planned++;
+          } else {
+              nav_metrics.replans_due_to_obstacles++;
+          }
+      }
+      
+      // proactive hazard detection
+      HazardType hazard = detect_hazards_ahead(rob_x, rob_y, rob_theta);
+      if (hazard != HAZARD_NONE) {
+          // replan if hazard detected ahead
+          replan_counter = 30;
+          
+          // print warning based on hazard type
+          if (hazard == HAZARD_STEEP_SLOPE) {
+              printf("[Hazard] Steep slope ahead! Replanning...\n");
+          } else if (hazard == HAZARD_ROCK) {
+              printf("[Hazard] Rock detected ahead! Avoiding...\n");
+          } else if (hazard == HAZARD_HOLE) {
+              printf("[Hazard] Potential hole detected! Steering away...\n");
+          }
+      }
+      
+      // follow the planned path
+      double steering = follow_path(&current_path, rob_x, rob_y, rob_theta);
+      
+      // update distance travelled metric
+      static double last_x = 0, last_y = 0;
+      static int first_call = 1;
+      if (!first_call) {
+          double dist = sqrt((rob_x - last_x)*(rob_x - last_x) + 
+                            (rob_y - last_y)*(rob_y - last_y));
+          nav_metrics.total_distance_travelled += dist;
+      }
+      first_call = 0;
+      last_x = rob_x;
+      last_y = rob_y;
+      
+      return steering;
+  }
+
 double get_map_cost(double x, double y) {
     // Get traversability from real sensor-derived map
     unsigned char trav = mapping_get_traversability(x, y);
@@ -1573,42 +1642,43 @@ double get_map_cost(double x, double y) {
 
 double calculate_navigation(double rob_x, double rob_y, double rob_theta, 
                             double goal_x, double goal_y) {
-    double lookahead = 2.0;
+    // double lookahead = 2.0;
     
-    // Check cost ahead
-    double next_x = rob_x + cos(rob_theta) * lookahead;
-    double next_y = rob_y + sin(rob_theta) * lookahead;
-    double cost_ahead = get_map_cost(next_x, next_y);
+    // // Check cost ahead
+    // double next_x = rob_x + cos(rob_theta) * lookahead;
+    // double next_y = rob_y + sin(rob_theta) * lookahead;
+    // double cost_ahead = get_map_cost(next_x, next_y);
     
-    // If high cost, check alternatives
-    if (cost_ahead > 100.0) {
-        double left_x = rob_x + cos(rob_theta + 0.5) * lookahead;
-        double left_y = rob_y + sin(rob_theta + 0.5) * lookahead;
-        double cost_left = get_map_cost(left_x, left_y);
+    // // If high cost, check alternatives
+    // if (cost_ahead > 100.0) {
+        // double left_x = rob_x + cos(rob_theta + 0.5) * lookahead;
+        // double left_y = rob_y + sin(rob_theta + 0.5) * lookahead;
+        // double cost_left = get_map_cost(left_x, left_y);
         
-        double right_x = rob_x + cos(rob_theta - 0.5) * lookahead;
-        double right_y = rob_y + sin(rob_theta - 0.5) * lookahead;
-        double cost_right = get_map_cost(right_x, right_y);
+        // double right_x = rob_x + cos(rob_theta - 0.5) * lookahead;
+        // double right_y = rob_y + sin(rob_theta - 0.5) * lookahead;
+        // double cost_right = get_map_cost(right_x, right_y);
         
-        if (cost_left < cost_ahead && cost_left < cost_right) {
-            printf("[Nav] Slope detected! Turning LEFT (cost: %.0f->%.0f)\n", cost_ahead, cost_left);
-            return 0.8;
-        } else if (cost_right < cost_ahead) {
-            printf("[Nav] Slope detected! Turning RIGHT (cost: %.0f->%.0f)\n", cost_ahead, cost_right);
-            return -0.8;
-        }
-    }
+        // if (cost_left < cost_ahead && cost_left < cost_right) {
+            // printf("[Nav] Slope detected! Turning LEFT (cost: %.0f->%.0f)\n", cost_ahead, cost_left);
+            // return 0.8;
+        // } else if (cost_right < cost_ahead) {
+            // printf("[Nav] Slope detected! Turning RIGHT (cost: %.0f->%.0f)\n", cost_ahead, cost_right);
+            // return -0.8;
+        // }
+    // }
     
-    // Navigate toward goal
-    double dx = goal_x - rob_x;
-    double dy = goal_y - rob_y;
-    double target_angle = atan2(dy, dx);
-    double error = target_angle - rob_theta;
+    // // Navigate toward goal
+    // double dx = goal_x - rob_x;
+    // double dy = goal_y - rob_y;
+    // double target_angle = atan2(dy, dx);
+    // double error = target_angle - rob_theta;
     
-    while(error > M_PI) error -= 2.0 * M_PI;
-    while(error < -M_PI) error += 2.0 * M_PI;
+    // while(error > M_PI) error -= 2.0 * M_PI;
+    // while(error < -M_PI) error += 2.0 * M_PI;
     
-    return error;
+    // return error;
+    return navigation_controller(rob_x, rob_y, rob_theta, goal_x, goal_y);
 }
 
 // detects if robot is currently tipping over
@@ -1662,13 +1732,13 @@ void pathplanning_print_metrics(void) {
     printf("Hazards Avoided (Slope/Terrain): %d\n", nav_metrics.hazards_avoided);
     printf("LiDAR Hazards Detected (Rocks/Holes): %d\n", nav_metrics.lidar_hazards_detected);
     printf("Emergency Stops (Tipping): %d\n", nav_metrics.emergency_stops);
-    printf("Total Distance Traveled: %.2f m\n", nav_metrics.total_distance_traveled);
+    printf("Total Distance Travelled: %.2f m\n", nav_metrics.total_distance_travelled);
     printf("Replans Due to Obstacles: %d\n", nav_metrics.replans_due_to_obstacles);
     
-    if (nav_metrics.total_distance_traveled > 0) {
+    if (nav_metrics.total_distance_travelled > 0) {
         double hazards_per_meter = (nav_metrics.hazards_avoided + 
                                     nav_metrics.lidar_hazards_detected) / 
-                                   nav_metrics.total_distance_traveled;
+                                   nav_metrics.total_distance_travelled;
         printf("Hazard Detection Rate: %.2f hazards/meter\n", hazards_per_meter);
     }
     
