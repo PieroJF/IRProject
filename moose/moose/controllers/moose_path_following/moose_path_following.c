@@ -78,6 +78,11 @@
 // Downsampling grid
 #define VOXEL_GRID_DIM 200
 
+// A* Path Planning
+#define PATH_MAP_SIZE 200   // grid size for path planning
+#define PATH_MAP_RESOLUTION 0.2  // 0.2m per cell
+#define MAX_PATH_LENGTH 500    // maximum waypoints in a path
+
 // ============================================================================
 // DATA STRUCTURES
 // ============================================================================
@@ -184,6 +189,29 @@ typedef struct {
     int icp_enabled;
 } MappingState;
 
+// path node for A* algorithm
+typedef struct PathNode {
+    int x, y;  // coordinates
+    double g_cost;  // cost
+    double h_cost;  // heuristic
+    double f_cost;   // total cost (g + h)
+    struct PathNode* parent;  // for path reconstruction
+} PathNode;
+
+// path structure
+typedef struct {
+    int x[MAX_PATH_LENGTH];  // X coordinates
+    int y[MAX_PATH_LENGTH];  // Y coordinates
+    int length;  // number of waypoints
+    int current_waypoint;  // Current target waypoint index
+} Path;
+
+// priority queue for A*
+typedef struct {
+    PathNode* nodes[MAX_PATH_LENGTH * 2];
+    int size;
+} PriorityQueue;
+
 // ============================================================================
 // GLOBAL VARIABLES
 // ============================================================================
@@ -203,6 +231,7 @@ static double gps_offset_z = 0.0;
 // Voxel grid for downsampling (allocated once)
 static char* g_voxel_grid = NULL;
 
+static Path current_path; // for A* path planning
 // ============================================================================
 // FORWARD DECLARATIONS
 // ============================================================================
@@ -235,6 +264,10 @@ void octomap_destroy(OctoMap* map);
 void octomap_insert_point(OctoMap* map, double px, double py, double pz,
                           double sensor_x, double sensor_y, double sensor_z);
 float octomap_get_occupancy(OctoMap* map, double x, double y, double z);
+
+// A* Path Planning functions
+int astar_plan_path(int start_x, int start_y, int goal_x, int goal_y, Path* path);
+double follow_path(Path* path, double robot_x, double robot_y, double robot_theta);
 
 // Point cloud functions
 PointCloud* pointcloud_create(int capacity);
@@ -1193,6 +1226,243 @@ void read_sensors_data(void) {
     }
 }
 
+// ============================================================================
+// A* PATH PLANNING
+// ============================================================================
+
+  static void world_to_path_grid(double wx, double wy, int* gx, int* gy) {
+      *gx = (int)((wx + 20.0) / PATH_MAP_RESOLUTION);
+      *gy = (int)((wy + 20.0) / PATH_MAP_RESOLUTION);
+      
+      if (*gx < 0) *gx = 0;
+      if (*gx >= PATH_MAP_SIZE) *gx = PATH_MAP_SIZE - 1;
+      if (*gy < 0) *gy = 0;
+      if (*gy >= PATH_MAP_SIZE) *gy = PATH_MAP_SIZE - 1;
+  }
+  
+  static void path_grid_to_world(int gx, int gy, double* wx, double* wy) {
+      *wx = (gx * PATH_MAP_RESOLUTION) - 20.0;
+      *wy = (gy * PATH_MAP_RESOLUTION) - 20.0;
+  }
+  
+  // priority queues
+  static void pq_init(PriorityQueue* pq) {
+      pq->size = 0;
+  }
+  
+  static void pq_push(PriorityQueue* pq, PathNode* node) {
+    if (pq->size >= MAX_PATH_LENGTH * 2) return;
+    pq->nodes[pq->size++] = node;
+    
+    // bubble up
+    int i = pq->size - 1;
+    while (i > 0) {
+        int parent = (i - 1) / 2;
+        if (pq->nodes[i]->f_cost >= pq->nodes[parent]->f_cost) break;
+        
+        PathNode* temp = pq->nodes[i];
+        pq->nodes[i] = pq->nodes[parent];
+        pq->nodes[parent] = temp;
+        i = parent;
+    }
+  }
+  
+  
+  static PathNode* pq_pop(PriorityQueue* pq) {
+    if (pq->size == 0) return NULL;
+    
+    PathNode* result = pq->nodes[0];
+    pq->nodes[0] = pq->nodes[--pq->size];
+    
+    // bubble down
+    int i = 0;
+    while (1) {
+        int left = 2 * i + 1;
+        int right = 2 * i + 2;
+        int smallest = i;
+        
+        if (left < pq->size && pq->nodes[left]->f_cost < pq->nodes[smallest]->f_cost)
+            smallest = left;
+        if (right < pq->size && pq->nodes[right]->f_cost < pq->nodes[smallest]->f_cost)
+            smallest = right;
+            
+        if (smallest == i) break;
+        
+        PathNode* temp = pq->nodes[i];
+        pq->nodes[i] = pq->nodes[smallest];
+        pq->nodes[smallest] = temp;
+        i = smallest;
+    }
+    
+    return result;
+  }
+  
+  // heuristic
+  static double path_heuristic(int x1, int y1, int x2, int y2) {
+      return sqrt((double)((x2-x1)*(x2-x1) + (y2-y1)*(y2-y1)));
+  }
+  
+  // A* Algorithm
+  int astar_plan_path(int start_x, int start_y, int goal_x, int goal_y, Path* path) {
+      static char visited[PATH_MAP_SIZE][PATH_MAP_SIZE];
+      memset(visited, 0, sizeof(visited));
+      
+      PriorityQueue open_set;
+      pq_init(&open_set);
+      
+      // allocate nodes for A* search
+      PathNode* nodes = (PathNode*)malloc(sizeof(PathNode) * PATH_MAP_SIZE * PATH_MAP_SIZE);
+      if (!nodes) {
+          printf("[A* PATH PLANNING ERROR] Memory allocation failed\n");
+          return 0;
+      }
+      int node_count = 0;
+      
+      // create start node
+      PathNode* start_node = &nodes[node_count++];
+      start_node->x = start_x;
+      start_node->y = start_y;
+      start_node->g_cost = 0;
+      start_node->h_cost = path_heuristic(start_x, start_y, goal_x, goal_y);
+      start_node->f_cost = start_node->h_cost;
+      start_node->parent = NULL;
+      
+      pq_push(&open_set, start_node);
+      
+      PathNode* goal_node = NULL;
+      int iterations = 0;
+      int max_iterations = PATH_MAP_SIZE * PATH_MAP_SIZE / 4;
+      
+      // search loop
+      while (open_set.size > 0 && iterations < max_iterations) {
+          iterations++;
+          PathNode* current = pq_pop(&open_set);
+          
+          // goal reached
+          if (current->x == goal_x && current->y == goal_y) {
+              goal_node = current;
+              break;
+          }
+          
+          visited[current->x][current->y] = 1;
+          
+          // explore neighbors
+          int dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
+          int dy[] = {-1, -1, -1, 0, 0, 1, 1, 1};
+          
+          for (int i = 0; i < 8; i++) {
+              int nx = current->x + dx[i];
+              int ny = current->y + dy[i];
+              
+              // bounds check
+              if (nx < 0 || nx >= PATH_MAP_SIZE || ny < 0 || ny >= PATH_MAP_SIZE) continue;
+              
+              // skip visited
+              if (visited[nx][ny]) continue;
+              
+              // get terrain cost from mapping module
+              double wx, wy;
+              path_grid_to_world(nx, ny, &wx, &wy);
+              double terrain_cost = get_map_cost(wx, wy);
+              
+              // skip impassable cells 
+              // cost > 200 = steep slope or obstacle
+              if (terrain_cost > 200.0) continue;
+              
+              // calculate movement cost 
+              // diagonal costs more
+              double move_cost = (i < 4) ? 1.0 : 1.414;
+              double new_g = current->g_cost + move_cost + (terrain_cost / 20.0);
+              
+              // create neighbor node
+              if (node_count >= PATH_MAP_SIZE * PATH_MAP_SIZE) continue;
+              PathNode* neighbor = &nodes[node_count++];
+              neighbor->x = nx;
+              neighbor->y = ny;
+              neighbor->g_cost = new_g;
+              neighbor->h_cost = path_heuristic(nx, ny, goal_x, goal_y);
+              neighbor->f_cost = neighbor->g_cost + neighbor->h_cost;
+              neighbor->parent = current;
+              
+              pq_push(&open_set, neighbor);
+          }
+      }
+      
+      // reconstruct path from goal to start
+      if (goal_node) {
+          path->length = 0;
+          PathNode* current = goal_node;
+          
+          // backtrack through parents
+          while (current != NULL && path->length < MAX_PATH_LENGTH) {
+              path->x[path->length] = current->x;
+              path->y[path->length] = current->y;
+              path->length++;
+              current = current->parent;
+          }
+          
+          // reverse path (start -> goal)
+          for (int i = 0; i < path->length / 2; i++) {
+              int temp_x = path->x[i];
+              int temp_y = path->y[i];
+              path->x[i] = path->x[path->length - 1 - i];
+              path->y[i] = path->y[path->length - 1 - i];
+              path->x[path->length - 1 - i] = temp_x;
+              path->y[path->length - 1 - i] = temp_y;
+          }
+          
+          path->current_waypoint = 0;
+          free(nodes);
+          
+          printf("[A*] Path found: %d waypoints, %d iterations\n", path->length, iterations);
+          return 1;
+      }
+      
+      // free memory allocated
+      free(nodes);
+      printf("[A*] No path found after %d iterations\n", iterations);
+      return 0;
+  }
+  
+  // path Following Controller
+  double follow_path(Path* path, double robot_x, double robot_y, double robot_theta) {
+      if (path->length == 0 || path->current_waypoint >= path->length) {
+          return 0.0; // no path
+      }
+      
+      // get current waypoint coordinates
+      double wx, wy;
+      path_grid_to_world(path->x[path->current_waypoint], 
+                         path->y[path->current_waypoint], &wx, &wy);
+      
+      // check if waypoint reached
+      double dist_to_waypoint = sqrt((wx - robot_x)*(wx - robot_x) + 
+                                     (wy - robot_y)*(wy - robot_y));
+      
+      if (dist_to_waypoint < 0.5) { // within 0.5m
+          path->current_waypoint++;
+          if (path->current_waypoint >= path->length) {
+              printf("[Path Follow] *** GOAL REACHED! ***\n");
+              return 0.0;
+          }
+          // update to next waypoint
+          path_grid_to_world(path->x[path->current_waypoint], 
+                            path->y[path->current_waypoint], &wx, &wy);
+      }
+      
+      // calculate steering command
+      double dx = wx - robot_x;
+      double dy = wy - robot_y;
+      double target_angle = atan2(dy, dx);
+      double error = target_angle - robot_theta;
+      
+      // normalise angle
+      while(error > M_PI) error -= 2.0 * M_PI;
+      while(error < -M_PI) error += 2.0 * M_PI;
+      
+      return error; // steering command
+  }
+  
 // ============================================================================
 // NAVIGATION (uses real map data from Piero's module)
 // ============================================================================
