@@ -1809,6 +1809,7 @@ void read_sensors_data(void) {
       if (dist_to_waypoint < 0.5) { // within 0.5m
           path->current_waypoint++;
           if (path->current_waypoint >= path->length) {
+              printf("[Path Follow] *** GOAL REACHED! ***\n");
               nav_metrics.successful_reaches++;
               return 0.0;
           }
@@ -1925,8 +1926,11 @@ void read_sensors_data(void) {
           
           // print warning based on hazard type
           if (hazard == HAZARD_STEEP_SLOPE) {
+              printf("[Hazard] Steep slope ahead! Replanning...\n");
           } else if (hazard == HAZARD_ROCK) {
+              printf("[Hazard] Rock detected ahead! Avoiding...\n");
           } else if (hazard == HAZARD_HOLE) {
+              printf("[Hazard] Potential hole detected! Steering away...\n");
           }
       }
       
@@ -2519,6 +2523,10 @@ int main(void) {
 
         // ========== PERIODIC STATUS UPDATE ==========
         if(step_count % (1000 / TIME_STEP) == 0) {
+            double lookahead_x = cx + cos(cyaw) * 2.0;
+            double lookahead_y = cy + sin(cyaw) * 2.0;
+            double map_cost = get_map_cost(lookahead_x, lookahead_y);
+            
             double gps_local_x = sensor_data.gps_x - gps_offset_x;
             double gps_local_y = sensor_data.gps_y - gps_offset_y;
             double gps_local_z = sensor_data.gps_z - gps_offset_z;
@@ -2536,8 +2544,42 @@ int main(void) {
             if (dist_err_3d > loc_metrics.max_error_3d) loc_metrics.max_error_3d = dist_err_3d;
             loc_metrics.sample_count++;
             
+            printf("\n========== t = %d s ==========\n", (int)(step_count * dt));
+            printf("Pos: (%.2f, %.2f, %.2f) -> Goal: (%.2f, %.2f) | Cost: %.0f\n", 
+                   cx, cy, ekf_filter.state[2], wander_state.goal_x, wander_state.goal_y, map_cost);
+            
+            printf("[EKF] X=%.3f Y=%.3f Z=%.3f | Roll=%.1f° Pitch=%.1f° Yaw=%.1f°\n",
+                   ekf_filter.state[0], ekf_filter.state[1], ekf_filter.state[2],
+                   ekf_filter.state[3] * 180/M_PI, ekf_filter.state[4] * 180/M_PI,
+                   ekf_filter.state[5] * 180/M_PI);
+            
+            printf("[Covariance] X=%.6f Y=%.6f Z=%.6f\n",
+                   ekf_filter.covariance[0][0], ekf_filter.covariance[1][1],
+                   ekf_filter.covariance[2][2]);
+            
+            printf("[Error] 2D=%.3fm, 3D=%.3fm\n", dist_err_2d, dist_err_3d);
+            
+            double current_pitch = ekf_filter.state[4];
+            printf("[IMU] Current Pitch: %.3f rad (%.1f deg)\n", current_pitch, current_pitch * 180/M_PI);
+            
+            if (fabs(ekf_filter.state[4]) > MAX_SAFE_PITCH) {
+                printf("[HAZARD] STEEP SLOPE DETECTED! Cost increased.\n");
+                
+                // calculate grid coordinates
+                int gx = (int)((ekf_filter.state[0] + 20.0) / MAP_RESOLUTION);
+                int gy = (int)((ekf_filter.state[1] + 20.0) / MAP_RESOLUTION);
+            
+                // bounds check to prevent crashing
+                if (gx >= 0 && gx < MAP_WIDTH && gy >= 0 && gy < MAP_HEIGHT) {
+                    // update the cost map to maximum penalty
+                    elevation_grid.traversability[gx][gy] = 255;
+                }
+            }
+            
             // Print 3D mapping stats periodically
             mapping_print_stats();
+            
+            printf("=====================================\n");
         }
     }
     
