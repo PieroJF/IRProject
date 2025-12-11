@@ -332,14 +332,14 @@ void octomap_recenter(OctoMap* map, double robot_x, double robot_y, double robot
 void octomap_insert_point(OctoMap* map, double px, double py, double pz,
                           double sensor_x, double sensor_y, double sensor_z);
 
-// A* Path Planning functions
+// A* Path Planning functions (Inika Kumar)
 int astar_plan_path(int start_x, int start_y, int goal_x, int goal_y, Path* path);
 double follow_path(Path* path, double robot_x, double robot_y, double robot_theta);
 
-// hazard detection function
+// hazard detection function (Inika Kumar)
 HazardType detect_hazards_ahead(double robot_x, double robot_y, double robot_theta);
 
-// navigating performance functions
+// navigating performance functions 
 void pathplanning_init(void);
 void pathplanning_print_metrics(void);
 
@@ -1594,7 +1594,7 @@ void read_sensors_data(void) {
 }
 
 // ============================================================================
-// A* PATH PLANNING
+// A* PATH PLANNING (Inika Kumar)
 // ============================================================================
 
   static void world_to_path_grid(double wx, double wy, int* gx, int* gy) {
@@ -1833,7 +1833,7 @@ void read_sensors_data(void) {
   
   
   // ============================================================================
-// HAZARD DETECTION 
+// HAZARD DETECTION (Inika Kumar)
 // ============================================================================
 
 // detect hazards from LIDAR + IMU data  
@@ -1883,10 +1883,10 @@ void read_sensors_data(void) {
   }
 
 // ============================================================================
-// NAVIGATION (uses real map data from Piero's module)
+// NAVIGATION (Inika Kumar)
 // ============================================================================
 
-  // Integrates A* path planning, hazard detection, real cost map and metrics tracking [Inika Kumar]
+  // Integrates A* path planning, hazard detection, real cost map and metrics tracking 
   double navigation_controller(double rob_x, double rob_y, double rob_theta, double goal_x, double goal_y) {
       static int initialised = 0;
       static int replan_counter = 0;
@@ -2000,7 +2000,7 @@ double calculate_navigation(double rob_x, double rob_y, double rob_theta,
   }
 
 // ============================================================================
-// NAVIGATION PERFORMACNE METRICS
+// NAVIGATION PERFORMACNE METRICS (Inika Kumar)
 // ==========================================================================
 
 // Initialise path planning and metrics
