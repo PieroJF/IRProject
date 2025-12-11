@@ -8,7 +8,14 @@ This project enhances the autonomy of a grass-cutting robot (Clearpath Moose) to
 
 ---
 
-### Prerequisites
+## Main Source Code
+The core logic for this project is found in the following file:
+
+`.../moose/moose/controllers/moose_path_following/moose_path_following.c`
+
+---
+
+## Prerequisites
 * **Webots R2022a**
 
 ---
